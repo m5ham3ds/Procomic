@@ -126,80 +126,79 @@ class ProComic : HttpSource() {
 
     // Run WebView in background to solve Cloudflare challenge and extract cookies
     private fun performWebViewBypass(): Boolean {
-        if (webViewBypassAttempted) return webViewInitialized
+    if (webViewBypassAttempted) return webViewInitialized
 
-        val latch = CountDownLatch(1)
-        var success = false
-        var cookiesResult: String? = null
+    val latch = CountDownLatch(1)
+    var success = false
+    var cookiesResult: String? = null
 
-        Handler(Looper.getMainLooper()).post {
-            try {
-                val webView = WebView(context)
-                webView.settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    loadWithOverviewMode = true
-                    useWideViewPort = true
-                    setSupportZoom(false)
-                    builtInZoomControls = false
-                    displayZoomControls = false
-                    cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-                }
-
-                CookieManager.getInstance().setAcceptCookie(true)
-                CookieManager.getInstance().removeAllCookies(null)
-
-                webView.webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        // بعد تحميل الصفحة، انتظر قليلاً لضمان حل التحدي
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            val cookieString = CookieManager.getInstance().getCookie(baseUrl) ?: ""
-                            if (cookieString.isNotEmpty() && cookieString.contains("cf_clearance")) {
-                                success = true
-                                cookiesResult = cookieString
-                                webViewInitialized = true
-                                latch.countDown()
-                            } else if (!success) {
-                                // إذا لم نجد الكوكيز المطلوبة، نحاول إعادة تحميل الصفحة بعد 5 ثوانٍ كحد أقصى
-                                Handler(Looper.getMainLooper()).postDelayed({
-                                    if (!success) {
-                                        webViewInitialized = false
-                                        latch.countDown()
-                                    }
-                                }, 5000)
-                            }
-                        }, 3000)
-                    }
-
-                    override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
-                        super.onReceivedError(view, request, error)
-                        webViewInitialized = false
-                        latch.countDown()
-                    }
-                }
-
-                webView.webChromeClient = WebChromeClient()
-                webView.loadUrl(baseUrl)
-            } catch (e: Exception) {
-                Log.e(name, "WebView initialization failed", e)
-                latch.countDown()
-            }
-        }
-
+    Handler(Looper.getMainLooper()).post {
         try {
-            latch.await(15, TimeUnit.SECONDS) // انتظر حتى 15 ثانية
-        } catch (e: InterruptedException) {
-            // ignore
-        }
+            val ctx = this@ProComic.context
+            val webView = WebView(ctx)
+            webView.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                loadWithOverviewMode = true
+                useWideViewPort = true
+                setSupportZoom(false)
+                builtInZoomControls = false
+                displayZoomControls = false
+                cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            }
 
-        webViewBypassAttempted = true
-        if (success && cookiesResult != null) {
-            updateClientWithCookies(cookiesResult!!)
-            return true
+            CookieManager.getInstance().setAcceptCookie(true)
+            CookieManager.getInstance().removeAllCookies(null)
+
+            webView.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        val cookieString = CookieManager.getInstance().getCookie(baseUrl) ?: ""
+                        if (cookieString.isNotEmpty() && cookieString.contains("cf_clearance")) {
+                            success = true
+                            cookiesResult = cookieString
+                            webViewInitialized = true
+                            latch.countDown()
+                        } else if (!success) {
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                if (!success) {
+                                    webViewInitialized = false
+                                    latch.countDown()
+                                }
+                            }, 5000)
+                        }
+                    }, 3000)
+                }
+
+                override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
+                    super.onReceivedError(view, request, error)
+                    webViewInitialized = false
+                    latch.countDown()
+                }
+            }
+
+            webView.webChromeClient = WebChromeClient()
+            webView.loadUrl(baseUrl)
+        } catch (e: Exception) {
+            Log.e(name, "WebView initialization failed", e)
+            latch.countDown()
         }
-        return false
     }
+
+    try {
+        latch.await(15, TimeUnit.SECONDS)
+    } catch (e: InterruptedException) {
+        // ignore
+    }
+
+    webViewBypassAttempted = true
+    if (success && cookiesResult != null) {
+        updateClientWithCookies(cookiesResult!!)
+        return true
+    }
+    return false
+}
 
     // تجاوز الطلبات التي تفشل بـ 403 لعرض رسالة توجيهية
     private fun checkAndThrow403(response: Response) {
