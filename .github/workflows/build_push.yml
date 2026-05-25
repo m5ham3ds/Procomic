@@ -79,6 +79,9 @@ jobs:
       - name: 🧹 Make gradlew executable
         run: chmod +x gradlew
 
+      - name: ✨ Apply spotless formatting
+        run: ./gradlew spotlessApply
+
       - name: 🏗️ Build extensions (${{ matrix.chunk.number }})
         env:
           MODULES: ${{ join(matrix.chunk.modules, ' ') }}
