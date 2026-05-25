@@ -2,14 +2,7 @@ package eu.kanade.tachiyomi.extension.ar.procomic
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import android.webkit.CookieManager
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.core.util.Consumer
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.asObservableSuccess
@@ -51,7 +44,6 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
@@ -67,156 +59,30 @@ class ProComic : HttpSource() {
     override val supportsLatest = true
     override val versionId = 5
 
-    private var webViewBypassAttempted = false
-    private var webViewInitialized = false
-
-    // Client that will be updated after WebView bypass
-    private var customClient: OkHttpClient = createBaseClient()
-
-    override val client: OkHttpClient
-        get() = customClient
-
-    private fun createBaseClient(): OkHttpClient {
-        return network.cloudflareClient.newBuilder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .addInterceptor(::scrambledImageInterceptor)
-            .addNetworkInterceptor(
-                CookieInterceptor(
-                    domain,
-                    listOf(
-                        "safe_browsing" to "off",
-                        "language" to "ar",
-                    ),
-                )
-            )
-            .addInterceptor { chain ->
-                val original = chain.request()
-                val request = original.newBuilder()
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                    .header("Accept-Language", "ar,en;q=0.9")
-                    .header("Accept-Encoding", "gzip, deflate, br")
-                    .header("Sec-Ch-Ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"")
-                    .header("Sec-Ch-Ua-Mobile", "?0")
-                    .header("Sec-Ch-Ua-Platform", "\"Windows\"")
-                    .header("Sec-Fetch-Dest", "document")
-                    .header("Sec-Fetch-Mode", "navigate")
-                    .header("Sec-Fetch-Site", "none")
-                    .header("Upgrade-Insecure-Requests", "1")
-                    .method(original.method, original.body)
-                    .build()
-                chain.proceed(request)
-            }
-            .build()
-    }
-
-    private fun updateClientWithCookies(cookies: String) {
-        val newClient = createBaseClient().newBuilder()
-            .addNetworkInterceptor { chain ->
-                val original = chain.request()
-                val request = original.newBuilder()
-                    .header("Cookie", cookies)
-                    .build()
-                chain.proceed(request)
-            }
-            .build()
-        customClient = newClient
-    }
-
-    // Run WebView in background to solve Cloudflare challenge and extract cookies
-    private fun performWebViewBypass(): Boolean {
-    if (webViewBypassAttempted) return webViewInitialized
-
-    val latch = CountDownLatch(1)
-    var success = false
-    var cookiesResult: String? = null
-
-    Handler(Looper.getMainLooper()).post {
-        try {
-            val ctx = this@ProComic.context
-            val webView = WebView(ctx)
-            webView.settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                loadWithOverviewMode = true
-                useWideViewPort = true
-                setSupportZoom(false)
-                builtInZoomControls = false
-                displayZoomControls = false
-                cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-            }
-
-            CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance().removeAllCookies(null)
-
-            webView.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        val cookieString = CookieManager.getInstance().getCookie(baseUrl) ?: ""
-                        if (cookieString.isNotEmpty() && cookieString.contains("cf_clearance")) {
-                            success = true
-                            cookiesResult = cookieString
-                            webViewInitialized = true
-                            latch.countDown()
-                        } else if (!success) {
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                if (!success) {
-                                    webViewInitialized = false
-                                    latch.countDown()
-                                }
-                            }, 5000)
-                        }
-                    }, 3000)
-                }
-
-                override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
-                    super.onReceivedError(view, request, error)
-                    webViewInitialized = false
-                    latch.countDown()
-                }
-            }
-
-            webView.webChromeClient = WebChromeClient()
-            webView.loadUrl(baseUrl)
-        } catch (e: Exception) {
-            Log.e(name, "WebView initialization failed", e)
-            latch.countDown()
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor(::scrambledImageInterceptor)
+        .addNetworkInterceptor(CookieInterceptor(domain, listOf("safe_browsing" to "off", "language" to "ar")))
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val request = original.newBuilder()
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "ar,en;q=0.9")
+                .header("Accept-Encoding", "gzip, deflate, br")
+                .header("Sec-Ch-Ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"")
+                .header("Sec-Ch-Ua-Mobile", "?0")
+                .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "none")
+                .header("Upgrade-Insecure-Requests", "1")
+                .method(original.method, original.body)
+                .build()
+            chain.proceed(request)
         }
-    }
-
-    try {
-        latch.await(15, TimeUnit.SECONDS)
-    } catch (e: InterruptedException) {
-        // ignore
-    }
-
-    webViewBypassAttempted = true
-    if (success && cookiesResult != null) {
-        updateClientWithCookies(cookiesResult!!)
-        return true
-    }
-    return false
-}
-
-    // تجاوز الطلبات التي تفشل بـ 403 لعرض رسالة توجيهية
-    private fun checkAndThrow403(response: Response) {
-        if (response.code == 403) {
-            response.close()
-            // محاولة تشغيل WebView الخفي
-            if (!webViewInitialized) {
-                if (performWebViewBypass()) {
-                    // إذا نجحنا، نرمي استثناء لإعادة المحاولة
-                    throw Exception("تم تجاوز الحماية مؤقتاً. الرجاء إعادة المحاولة.")
-                } else {
-                    throw Exception("HTTP 403 - الموقع يطلب التحقق. الرجاء استخدام 'Open in WebView' من القائمة لتجاوز الحماية.\n\nبعد فتح الموقع في WebView والعودة، ستتم المزامنة.")
-                }
-            } else {
-                throw Exception("HTTP 403 - فشل تجاوز الحماية. الرجاء استخدام 'Open in WebView' من القائمة.")
-            }
-        }
-    }
+        .build()
 
     override fun headersBuilder() = super.headersBuilder()
         .set("Referer", "$baseUrl/")
@@ -227,25 +93,27 @@ class ProComic : HttpSource() {
         .set("rsc", "1")
         .build()
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        val filters = getFilterList().apply {
-            firstInstance<SortFilter>().state = 2
+    private fun checkAndThrow403(response: Response) {
+        if (response.code == 403) {
+            response.close()
+            throw Exception("HTTP 403 - الرجاء استخدام 'Open in WebView' من القائمة لتجاوز الحماية.\n\nبعد فتح الموقع في WebView والعودة، ستتم المزامنة.")
         }
+    }
+
+    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
+        val filters = getFilterList().apply { firstInstance<SortFilter>().state = 2 }
         return fetchSearchManga(page, "", filters)
     }
 
     override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        val filters = getFilterList().apply {
-            firstInstance<SortFilter>().state = 1
-        }
+        val filters = getFilterList().apply { firstInstance<SortFilter>().state = 1 }
         return fetchSearchManga(page, "", filters)
     }
 
     private val pageNumber = ConcurrentHashMap<String, Int>()
 
     private fun searchKey(query: String, filters: FilterList): String {
-        val filterPart = filters.filterIsInstance<Filter<*>>()
-            .joinToString("|") { it.state.toString() }
+        val filterPart = filters.filterIsInstance<Filter<*>>().joinToString("|") { it.state.toString() }
         return "$query::$filterPart"
     }
 
@@ -255,32 +123,20 @@ class ProComic : HttpSource() {
             val path = url.pathSegments
             if (url.host == domain && path.size >= 4 && path[0] == "series") {
                 val type = path[1]
-                if (type !in SUPPORTED_TYPES) {
-                    throw Exception("نوع غير مدعوم")
-                }
+                if (type !in SUPPORTED_TYPES) throw Exception("نوع غير مدعوم")
                 val mangaId = path[2]
                 val slug = path[3]
-
-                val manga = SManga.create().apply {
-                    this@apply.url = "/series/$type/$mangaId/$slug"
-                }
-
-                return fetchMangaDetails(manga).map {
-                    MangasPage(listOf(it), false)
-                }
-            } else {
-                throw Exception("رابط غير مدعوم")
-            }
+                val manga = SManga.create().apply { this@apply.url = "/series/$type/$mangaId/$slug" }
+                return fetchMangaDetails(manga).map { MangasPage(listOf(it), false) }
+            } else throw Exception("رابط غير مدعوم")
         }
 
         val key = searchKey(query, filters)
-        if (page == 1) {
-            pageNumber[key] = 1
-        }
+        if (page == 1) pageNumber[key] = 1
 
         return client.newCall(searchMangaRequest(pageNumber[key]!!, query, filters))
             .asObservableSuccess()
-            .doOnNext { response -> checkAndThrow403(response) }
+            .doOnNext { checkAndThrow403(it) }
             .map { response ->
                 val statusFilter = filters.firstInstance<StatusFilter>().selected
                 val genreFilter = filters.firstInstance<GenreFilter>()
@@ -290,35 +146,19 @@ class ProComic : HttpSource() {
                 val mangas = data.data.asSequence()
                     .filter { manga -> manga.type in SUPPORTED_TYPES }
                     .filter { manga -> statusFilter == null || manga.progress == statusFilter }
-                    .filter { manga ->
-                        genreFilter.included.isEmpty() ||
-                            manga.metadata.genres.containsAll(genreFilter.included)
-                    }
-                    .filter { manga ->
-                        genreFilter.excluded.none { it in manga.metadata.genres }
-                    }
-                    .filter { manga ->
-                        tagFilter.included.isEmpty() ||
-                            manga.metadata.tags.containsAll(tagFilter.included)
-                    }
-                    .filter { manga ->
-                        tagFilter.excluded.none { it in manga.metadata.tags }
-                    }
+                    .filter { manga -> genreFilter.included.isEmpty() || manga.metadata.genres.containsAll(genreFilter.included) }
+                    .filter { manga -> genreFilter.excluded.none { it in manga.metadata.genres } }
+                    .filter { manga -> tagFilter.included.isEmpty() || manga.metadata.tags.containsAll(tagFilter.included) }
+                    .filter { manga -> tagFilter.excluded.none { it in manga.metadata.tags } }
                     .map { manga ->
                         SManga.create().apply {
                             url = "/series/${manga.type}/${manga.id}/${manga.slug}"
                             title = manga.title
                             thumbnail_url = (manga.coverImageApp?.desktop ?: manga.coverImage)?.let {
-                                if (it.startsWith("/")) {
-                                    manga.cdn?.let { cdn -> "https://$cdn.$domain$it" }
-                                } else {
-                                    it
-                                }
+                                if (it.startsWith("/")) manga.cdn?.let { cdn -> "https://$cdn.$domain$it" } else it
                             }
                         }
-                    }
-                    .toList()
-
+                    }.toList()
                 MangasPage(mangas, data.meta.hasNextPage())
             }
             .flatMap {
@@ -337,38 +177,24 @@ class ProComic : HttpSource() {
             addQueryParameter("status", "approved")
             addQueryParameter("limit", "18")
             addQueryParameter("page", page.toString())
-            query.takeIf(String::isNotBlank)?.also { query ->
-                addQueryParameter("search", query)
-            }
-            filters.firstInstance<TypeFilter>().selected?.also { type ->
-                addQueryParameter("type", type)
-            }
+            query.takeIf(String::isNotBlank)?.also { addQueryParameter("search", it) }
+            filters.firstInstance<TypeFilter>().selected?.also { addQueryParameter("type", it) }
             addQueryParameter("sort", filters.firstInstance<SortFilter>().selected)
-            filters.firstInstance<YearFilter>().selected?.also { year ->
-                addQueryParameter("year", year)
-            }
+            filters.firstInstance<YearFilter>().selected?.also { addQueryParameter("year", it) }
         }.build()
-
         return GET(url, headers)
     }
 
     override fun getFilterList() = FilterList(
-        TypeFilter(),
-        SortFilter(),
-        YearFilter(),
-        StatusFilter(),
-        GenreFilter(),
-        TagFilter(),
+        TypeFilter(), SortFilter(), YearFilter(), StatusFilter(), GenreFilter(), TagFilter()
     )
 
-    override fun mangaDetailsRequest(manga: SManga): Request = GET(getMangaUrl(manga), rscHeaders)
-
-    override fun getMangaUrl(manga: SManga): String = "$baseUrl${manga.url}"
+    override fun mangaDetailsRequest(manga: SManga) = GET(getMangaUrl(manga), rscHeaders)
+    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
 
     override fun mangaDetailsParse(response: Response): SManga {
         checkAndThrow403(response)
         val manga = response.extractNextJs<Series>()!!.series
-
         return SManga.create().apply {
             url = "/series/${manga.type}/${manga.id}/${manga.slug}"
             title = manga.title
@@ -393,11 +219,7 @@ class ProComic : HttpSource() {
                 manga.metadata.origin?.also { origin ->
                     add(origin.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() })
                 }
-                when (manga.type) {
-                    "manga" -> add("مانجا")
-                    "manhwa" -> add("مانها")
-                    "manhua" -> add("مانهوا")
-                }
+                when (manga.type) { "manga" -> add("مانجا"); "manhwa" -> add("مانها"); "manhua" -> add("مانهوا") }
                 if (manga.metadata.genres.isNotEmpty()) {
                     val genreMap = genres.associate { it.second to it.first }
                     manga.metadata.genres.mapTo(this) { genreMap[it] ?: it }
@@ -414,11 +236,7 @@ class ProComic : HttpSource() {
                 else -> SManga.UNKNOWN
             }
             thumbnail_url = (manga.coverImageApp?.desktop ?: manga.metadata.coverImage)?.let {
-                if (it.startsWith("/")) {
-                    manga.cdn?.let { cdn -> "https://$cdn.$domain$it" }
-                } else {
-                    it
-                }
+                if (it.startsWith("/")) manga.cdn?.let { cdn -> "https://$cdn.$domain$it" } else it
             }
             initialized = true
         }
@@ -438,73 +256,46 @@ class ProComic : HttpSource() {
 
         while (data.totalChapters > chapters.size) {
             val request = GET("$baseUrl/api/public/$type/$id/chapters?page=${page++}&limit=$size&order=desc", headers)
-            val nextChapters = client.newCall(request).execute()
-                .also {
-                    if (!it.isSuccessful) {
-                        it.close()
-                        throw Exception("HTTP ${it.code}")
-                    }
-                }
-                .parseAs<Data<List<Chapter>>>()
-
+            val nextChapters = client.newCall(request).execute().also {
+                if (!it.isSuccessful) { it.close(); throw Exception("HTTP ${it.code}") }
+            }.parseAs<Data<List<Chapter>>>()
             chapters.addAll(nextChapters.data)
         }
 
         countViews(id)
 
-        return chapters
-            .filter { it.language == "AR" }
-            .map { chapter ->
-                SChapter.create().apply {
-                    url = "/series/$type/$id/$slug/${chapter.id}/${chapter.number}"
-                    name = buildString {
-                        append("\u200F")
-                        if (chapter.coins != null && chapter.coins > 0) {
-                            append("🔒 ")
-                        }
-                        append("الفصل ")
-                        append(chapter.number.toFloat().toString().substringBefore(".0"))
-                        chapter.title?.trim()?.takeIf { it.isNotBlank() }?.let { trimmedTitle ->
-                            if (trimmedTitle != chapter.number.trim() && trimmedTitle != chapter.number) {
-                                append(" \u200F- ")
-                                append(trimmedTitle)
-                            }
-                        }
+        return chapters.filter { it.language == "AR" }.map { chapter ->
+            SChapter.create().apply {
+                url = "/series/$type/$id/$slug/${chapter.id}/${chapter.number}"
+                name = buildString {
+                    append("\u200F")
+                    if (chapter.coins != null && chapter.coins > 0) append("🔒 ")
+                    append("الفصل ")
+                    append(chapter.number.toFloat().toString().substringBefore(".0"))
+                    chapter.title?.trim()?.takeIf { it.isNotBlank() && it != chapter.number.trim() && it != chapter.number }?.let {
+                        append(" \u200F- ", it)
                     }
-                    scanlator = chapter.uploader ?: "\u200B"
-                    chapter_number = chapter.number.toFloat()
-                    date_upload = dateFormat.tryParse(chapter.createdAt)
                 }
+                scanlator = chapter.uploader ?: "\u200B"
+                chapter_number = chapter.number.toFloat()
+                date_upload = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).tryParse(chapter.createdAt)
             }
-            .sortedByDescending { it.chapter_number }
+        }.sortedByDescending { it.chapter_number }
     }
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
 
-    override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), rscHeaders)
+    override fun pageListRequest(chapter: SChapter) = GET(getChapterUrl(chapter), rscHeaders)
 
     override fun getChapterUrl(chapter: SChapter): String {
-        val url = if (chapter.url.startsWith("{")) {
-            chapter.url.parseAs<ChapterUrl>()
-        } else {
-            chapter.url
-        }
+        val url = if (chapter.url.startsWith("{")) chapter.url.parseAs<ChapterUrl>() else chapter.url
         return "$baseUrl$url"
     }
 
     override fun pageListParse(response: Response): List<Page> {
         checkAndThrow403(response)
         val responseBody = response.body.string()
-        val imageData = responseBody.extractNextJsRsc<Images>()
-        if (imageData == null) {
-            val coins = responseBody.extractNextJsRsc<Coins>()?.coins
-            if (coins != null && coins > 0) {
-                throw Exception("فصل مدفوع")
-            } else {
-                return emptyList()
-            }
-        }
-
+        val imageData = responseBody.extractNextJsRsc<Images>() ?: throw Exception("فصل مدفوع أو لا يحتوي على صور")
         val seriesId = response.request.url.pathSegments[2]
         val chapterId = response.request.url.pathSegments[4]
 
@@ -515,21 +306,13 @@ class ProComic : HttpSource() {
             if (deferred.requireTurnstile == true) {
                 throw Exception("هذا الفصل يتطلب التحقق الأمني (Turnstile). الرجاء فتحه من متصفح عادي.")
             }
-
             val deferredUrl = baseUrl.toHttpUrl().newBuilder()
                 .addPathSegment("chapter-deferred-media")
                 .addPathSegment(chapterId)
                 .addQueryParameter("token", deferred.token)
-                .apply {
-                    deferred.splitIndex?.let { split ->
-                        addQueryParameter("split", split.toString())
-                    }
-                }
+                .apply { deferred.splitIndex?.let { addQueryParameter("split", it.toString()) } }
                 .build()
-
-            val deferredImages = client.newCall(GET(deferredUrl, headers))
-                .execute().parseAs<Data<DeferredImages>>()
-
+            val deferredImages = client.newCall(GET(deferredUrl, headers)).execute().parseAs<Data<DeferredImages>>()
             images.addAll(deferredImages.data.images)
             maps.addAll(deferredImages.data.maps)
         }
@@ -538,37 +321,20 @@ class ProComic : HttpSource() {
 
         val chapterUrl = response.request.url.toString()
         val pages = mutableListOf<Page>()
-
-        images.mapIndexedTo(pages) { index, imageUrl ->
-            Page(index, chapterUrl, imageUrl)
-        }
-        maps.mapIndexedTo(pages) { index, scrambledData ->
-            Page(pages.size + index, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#${scrambledData.toJsonString()}")
-        }
-
+        images.forEachIndexed { idx, url -> pages.add(Page(idx, chapterUrl, url)) }
+        maps.forEachIndexed { idx, data -> pages.add(Page(images.size + idx, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#${data.toJsonString()}")) }
         return pages
     }
 
-    override fun imageRequest(page: Page): Request {
-        val headers = headersBuilder()
-            .set("Referer", page.url)
-            .build()
-        return GET(page.imageUrl!!, headers)
-    }
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!, headersBuilder().set("Referer", page.url).build())
 
     private fun scrambledImageInterceptor(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val url = request.url
-        if (url.host != SCRAMBLED_IMAGE_HOST) {
-            return chain.proceed(request)
-        }
+        if (url.host != SCRAMBLED_IMAGE_HOST) return chain.proceed(request)
 
         val chapterUrl = request.header("Referer")!!
-        val cdn = when (chapterUrl.toHttpUrl().pathSegments[1]) {
-            "manga" -> "cdn1"
-            "manhua" -> "cdn2"
-            else -> "cdn3"
-        }
+        val cdn = when (chapterUrl.toHttpUrl().pathSegments[1]) { "manga" -> "cdn1"; "manhua" -> "cdn2"; else -> "cdn3" }
 
         val scrambledImage = when (val scrambledData = url.fragment!!.parseAs<ScrambledData>()) {
             is ScrambledImage -> scrambledData
@@ -576,23 +342,15 @@ class ProComic : HttpSource() {
         }
 
         val (puzzleMode, layout) = scrambledImage.mode.split("_", limit = 2)
-
-        require(scrambledImage.dim.size >= 2) { "Invalid dim: ${scrambledImage.dim}" }
-
-        val width = scrambledImage.dim[0]
-        val height = scrambledImage.dim[1]
-
+        val (width, height) = scrambledImage.dim[0] to scrambledImage.dim[1]
         val orderedPieces = scrambledImage.order.map { scrambledImage.pieces[it] }
+
         val pieceBitmaps = runBlocking {
             orderedPieces.map { pieceUrl ->
                 async(Dispatchers.IO.limitedParallelism(2)) {
-                    var imgUrl = if (pieceUrl.startsWith("/")) {
-                        "https://$cdn.$domain$pieceUrl"
-                    } else {
-                        pieceUrl
-                    }.toHttpUrl()
-                    if (imgUrl.host.startsWith("cdn")) {
-                        val payload = Url(url = imgUrl.toString()).toJsonString().toRequestBody(JSON_MEDIA_TYPE)
+                    var imgUrl = if (pieceUrl.startsWith("/")) "https://$cdn.$domain$pieceUrl" else pieceUrl
+                    if (imgUrl.toHttpUrl().host.startsWith("cdn")) {
+                        val payload = Url(url = imgUrl).toJsonString().toRequestBody(JSON_MEDIA_TYPE)
                         val signHeaders = headersBuilder()
                             .set("Sec-Fetch-Site", "same-origin")
                             .set("Referer", chapterUrl)
@@ -601,10 +359,10 @@ class ProComic : HttpSource() {
                         val response = client.newCall(signRequest).await()
                         if (response.isSuccessful) {
                             val token = response.parseAs<Token>()
-                            imgUrl = imgUrl.newBuilder()
-                                .setQueryParameter("token", token.token)
-                                .setQueryParameter("expires", token.expires.toString())
-                                .build()
+                            imgUrl = imgUrl.toHttpUrl().newBuilder()
+                                .addQueryParameter("token", token.token)
+                                .addQueryParameter("expires", token.expires.toString())
+                                .build().toString()
                         } else {
                             response.close()
                         }
@@ -612,13 +370,9 @@ class ProComic : HttpSource() {
                     val pieceRequest = request.newBuilder().url(imgUrl).build()
                     val response = client.newCall(pieceRequest).await()
                     response.body.use { body ->
-                        val decoder = ImageDecoder.newInstance(body.byteStream())
-                            ?: throw Exception("Failed to create decoder")
-                        try {
-                            decoder.decode() ?: throw Exception("Failed to decode piece")
-                        } finally {
-                            decoder.recycle()
-                        }
+                        val decoder = ImageDecoder.newInstance(body.byteStream()) ?: throw Exception("Failed to create decoder")
+                        try { decoder.decode() ?: throw Exception("Failed to decode piece") }
+                        finally { decoder.recycle() }
                     }
                 }
             }.awaitAll()
@@ -637,29 +391,25 @@ class ProComic : HttpSource() {
                     }
                 }
                 "grid" -> {
-                    val (cols, rows) = layout.split('x', limit = 2).map { it.toInt() }
+                    val (cols, rows) = layout.split('x').map { it.toInt() }
                     var y = 0f
                     for (r in 0 until rows) {
                         var x = 0f
-                        var maxHeightInRow = 0f
+                        var maxH = 0f
                         for (c in 0 until cols) {
-                            val index = r * cols + c
-                            if (index < pieceBitmaps.size) {
-                                val bitmap = pieceBitmaps[index]
-                                canvas.drawBitmap(bitmap, x, y, null)
-                                x += bitmap.width
-                                maxHeightInRow = maxOf(maxHeightInRow, bitmap.height.toFloat())
+                            val idx = r * cols + c
+                            if (idx < pieceBitmaps.size) {
+                                canvas.drawBitmap(pieceBitmaps[idx], x, y, null)
+                                x += pieceBitmaps[idx].width
+                                maxH = maxOf(maxH, pieceBitmaps[idx].height.toFloat())
                             }
                         }
-                        y += maxHeightInRow
+                        y += maxH
                     }
                 }
                 else -> throw IOException("Unknown puzzle mode: $puzzleMode")
             }
-
-            val buffer = Buffer().apply {
-                resultBitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream())
-            }
+            val buffer = Buffer().apply { resultBitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream()) }
             return Response.Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)
@@ -677,47 +427,36 @@ class ProComic : HttpSource() {
     private val sessionKeyLock = Any()
 
     private fun decodeScrambledImageToken(data: ScrambledImageToken): ScrambledImage {
-        val value = String(urlSafeBase64(data.token), Charsets.UTF_8)
-            .parseAs<ScrambledImageTokenValue>()
-
+        val value = String(urlSafeBase64(data.token), Charsets.UTF_8).parseAs<ScrambledImageTokenValue>()
         val iv = urlSafeBase64(value.iv)
         val tag = urlSafeBase64(value.tag)
         val encryptedData = urlSafeBase64(value.data)
 
         val key = when (value.m) {
             "browser" if value.v == 2 -> {
-                val hash = MessageDigest.getInstance("SHA-256")
-                    .digest(
-                        "prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}"
-                            .toByteArray(Charsets.UTF_8),
-                    )
+                val hash = MessageDigest.getInstance("SHA-256").digest("prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}".toByteArray())
                 SecretKeySpec(hash, "AES")
             }
             "browser_session" if value.v == 3 -> synchronized(sessionKeyLock) {
                 val time = System.currentTimeMillis()
-                val key = sessionKey[value.cid]?.takeIf { it.second > time }?.first ?: run {
+                sessionKey[value.cid]?.takeIf { it.second > time }?.first ?: run {
                     val request = GET("$baseUrl/chapter-map-session-key/${value.cid}", headers)
                     val response = client.newCall(request).execute().parseAs<Data<Key>>()
                     sessionKey[value.cid] = response.data.key to (time + 120000)
                     response.data.key
-                }
-                SecretKeySpec(urlSafeBase64(key), "AES")
+                }.let { SecretKeySpec(urlSafeBase64(it), "AES") }
             }
             else -> throw Exception("Unknown method: ${value.m}")
         }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            val spec = GCMParameterSpec(128, iv)
-            init(Cipher.DECRYPT_MODE, key, spec)
+            init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
         }
-
         val decryptedBytes = cipher.doFinal(encryptedData + tag)
         return String(decryptedBytes, Charsets.UTF_8).parseAs()
     }
 
-    private fun urlSafeBase64(data: String) = Base64.UrlSafe
-        .withPadding(Base64.PaddingOption.PRESENT_OPTIONAL)
-        .decode(data)
+    private fun urlSafeBase64(data: String) = Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL).decode(data)
 
     private fun countViews(seriesId: String, chapterId: String? = null) {
         val userAgent = headers["User-Agent"]!!
@@ -729,26 +468,13 @@ class ProComic : HttpSource() {
                 TABLES_REGEX.containsMatchIn(userAgent) -> "tablet"
                 else -> "desktop"
             },
-            surface = when {
-                chapterId == null -> "series"
-                else -> "chapter"
-            },
+            surface = if (chapterId == null) "series" else "chapter"
         ).toJsonString().toRequestBody(JSON_MEDIA_TYPE)
 
-        client.newCall(POST("$baseUrl/api/views", headers, payload))
-            .enqueue(
-                object : Callback {
-                    override fun onResponse(call: Call, response: Response) {
-                        if (!response.isSuccessful) {
-                            Log.e(name, "Failed to count views, HTTP ${response.code}")
-                        }
-                        response.closeQuietly()
-                    }
-                    override fun onFailure(call: Call, e: okio.IOException) {
-                        Log.e(name, "Failed to count views", e)
-                    }
-                },
-            )
+        client.newCall(POST("$baseUrl/api/views", headers, payload)).enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) { response.closeQuietly() }
+            override fun onFailure(call: Call, e: okio.IOException) { Log.e(name, "Failed to count views", e) }
+        })
     }
 
     override fun popularMangaRequest(page: Int): Request = throw UnsupportedOperationException()
