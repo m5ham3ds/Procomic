@@ -323,10 +323,10 @@ class ProComic : HttpSource() {
 
         val chapterUrl = response.request.url.toString()
         val pages = mutableListOf<Page>()
-        images.forEachIndexed { idx, url -> pages.add(Page(idx, chapterUrl, url)) }
-        maps.forEachIndexed { idx, data -> 
-            val jsonString = data.toJsonString()
-            pages.add(Page(images.size + idx, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#$jsonString"))
+        images.forEachIndexed { index, url -> pages.add(Page(index, chapterUrl, url)) }
+        maps.forEachIndexed { index, data -> 
+            val json = data.toJsonString()
+            pages.add(Page(images.size + index, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#$json"))
         }
         return pages
     }
@@ -349,8 +349,12 @@ class ProComic : HttpSource() {
             else -> throw IOException("Unknown scrambled data type")
         }
 
-        val (puzzleMode, layout) = scrambledImage.mode.split("_", limit = 2)
-        val (width, height) = scrambledImage.dim[0] to scrambledImage.dim[1]
+        val parts = scrambledImage.mode.split("_", limit = 2)
+        val puzzleMode = parts[0]
+        val layout = if (parts.size > 1) parts[1] else ""
+
+        val width = scrambledImage.dim[0]
+        val height = scrambledImage.dim[1]
         val orderedPieces = scrambledImage.order.map { scrambledImage.pieces[it] }
 
         val pieceBitmaps = runBlocking {
@@ -435,34 +439,48 @@ class ProComic : HttpSource() {
     private val sessionKeyLock = Any()
 
     private fun decodeScrambledImageToken(data: ScrambledImageToken): ScrambledImage {
-        val value = String(urlSafeBase64(data.token), Charsets.UTF_8).parseAs<ScrambledImageTokenValue>()
+        val decoded = String(urlSafeBase64(data.token), Charsets.UTF_8)
+        val value = decoded.parseAs<ScrambledImageTokenValue>()
+
         val iv = urlSafeBase64(value.iv)
         val tag = urlSafeBase64(value.tag)
         val encryptedData = urlSafeBase64(value.data)
 
-        val key: Key = when (value.m) {
-            "browser" if value.v == 2 -> {
-                val hash = MessageDigest.getInstance("SHA-256").digest("prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}".toByteArray())
+        val secretKey: Key = when (value.m) {
+            "browser" -> {
+                require(value.v == 2) { "Unsupported version: ${value.v}" }
+                val input = "prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}"
+                val hash = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
                 SecretKeySpec(hash, "AES")
             }
-            "browser_session" if value.v == 3 -> synchronized(sessionKeyLock) {
-                val time = System.currentTimeMillis()
-                sessionKey[value.cid]?.takeIf { it.second > time }?.first ?: run {
-                    val request = GET("$baseUrl/chapter-map-session-key/${value.cid}", headers)
-                    val response = client.newCall(request).execute().parseAs<Data<Key>>()
-                    sessionKey[value.cid] = Pair(response.data.key, time + 120000)
-                    response.data.key
-                }.let { SecretKeySpec(urlSafeBase64(it), "AES") }
+            "browser_session" -> {
+                require(value.v == 3) { "Unsupported version: ${value.v}" }
+                synchronized(sessionKeyLock) {
+                    val now = System.currentTimeMillis()
+                    val existing = sessionKey[value.cid]
+                    if (existing != null && existing.second > now) {
+                        SecretKeySpec(urlSafeBase64(existing.first), "AES")
+                    } else {
+                        val request = GET("$baseUrl/chapter-map-session-key/${value.cid}", headers)
+                        val response = client.newCall(request).execute()
+                        if (!response.isSuccessful) throw Exception("Failed to get session key")
+                        val keyData = response.parseAs<Data<Key>>()
+                        val key = keyData.data.key
+                        sessionKey[value.cid] = Pair(key, now + 120000)
+                        SecretKeySpec(urlSafeBase64(key), "AES")
+                    }
+                }
             }
             else -> throw Exception("Unknown method: ${value.m}")
         }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val spec = GCMParameterSpec(128, iv)
-        cipher.init(Cipher.DECRYPT_MODE, key, spec as AlgorithmParameterSpec)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
 
-        val decryptedBytes = cipher.doFinal(encryptedData + tag)
-        return String(decryptedBytes, Charsets.UTF_8).parseAs()
+        val decrypted = cipher.doFinal(encryptedData + tag)
+        val json = String(decrypted, Charsets.UTF_8)
+        return json.parseAs<ScrambledImage>()
     }
 
     private fun urlSafeBase64(data: String) = Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL).decode(data)
