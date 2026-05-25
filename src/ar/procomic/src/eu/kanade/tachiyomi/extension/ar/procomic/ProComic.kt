@@ -2,7 +2,14 @@ package eu.kanade.tachiyomi.extension.ar.procomic
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.core.util.Consumer
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.asObservableSuccess
@@ -44,6 +51,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
@@ -60,54 +68,154 @@ class ProComic : HttpSource() {
     override val versionId = 5
 
     private var webViewBypassAttempted = false
+    private var webViewInitialized = false
 
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .addInterceptor(::scrambledImageInterceptor)
-        .addNetworkInterceptor(
-            CookieInterceptor(
-                domain,
-                listOf(
-                    "safe_browsing" to "off",
-                    "language" to "ar",
-                ),
+    // Client that will be updated after WebView bypass
+    private var customClient: OkHttpClient = createBaseClient()
+
+    override val client: OkHttpClient
+        get() = customClient
+
+    private fun createBaseClient(): OkHttpClient {
+        return network.cloudflareClient.newBuilder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(::scrambledImageInterceptor)
+            .addNetworkInterceptor(
+                CookieInterceptor(
+                    domain,
+                    listOf(
+                        "safe_browsing" to "off",
+                        "language" to "ar",
+                    ),
+                )
             )
-        )
-        .addInterceptor { chain ->
-            val original = chain.request()
-            val request = original.newBuilder()
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                .header("Accept-Language", "ar,en;q=0.9")
-                .header("Accept-Encoding", "gzip, deflate, br")
-                .header("Sec-Ch-Ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"")
-                .header("Sec-Ch-Ua-Mobile", "?0")
-                .header("Sec-Ch-Ua-Platform", "\"Windows\"")
-                .header("Sec-Fetch-Dest", "document")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-Site", "none")
-                .header("Upgrade-Insecure-Requests", "1")
-                .method(original.method, original.body)
-                .build()
-            chain.proceed(request)
+            .addInterceptor { chain ->
+                val original = chain.request()
+                val request = original.newBuilder()
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                    .header("Accept-Language", "ar,en;q=0.9")
+                    .header("Accept-Encoding", "gzip, deflate, br")
+                    .header("Sec-Ch-Ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"")
+                    .header("Sec-Ch-Ua-Mobile", "?0")
+                    .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+                    .header("Sec-Fetch-Dest", "document")
+                    .header("Sec-Fetch-Mode", "navigate")
+                    .header("Sec-Fetch-Site", "none")
+                    .header("Upgrade-Insecure-Requests", "1")
+                    .method(original.method, original.body)
+                    .build()
+                chain.proceed(request)
+            }
+            .build()
+    }
+
+    private fun updateClientWithCookies(cookies: String) {
+        val newClient = createBaseClient().newBuilder()
+            .addNetworkInterceptor { chain ->
+                val original = chain.request()
+                val request = original.newBuilder()
+                    .header("Cookie", cookies)
+                    .build()
+                chain.proceed(request)
+            }
+            .build()
+        customClient = newClient
+    }
+
+    // Run WebView in background to solve Cloudflare challenge and extract cookies
+    private fun performWebViewBypass(): Boolean {
+        if (webViewBypassAttempted) return webViewInitialized
+
+        val latch = CountDownLatch(1)
+        var success = false
+        var cookiesResult: String? = null
+
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val webView = WebView(context)
+                webView.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    loadWithOverviewMode = true
+                    useWideViewPort = true
+                    setSupportZoom(false)
+                    builtInZoomControls = false
+                    displayZoomControls = false
+                    cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                }
+
+                CookieManager.getInstance().setAcceptCookie(true)
+                CookieManager.getInstance().removeAllCookies(null)
+
+                webView.webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        // بعد تحميل الصفحة، انتظر قليلاً لضمان حل التحدي
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            val cookieString = CookieManager.getInstance().getCookie(baseUrl) ?: ""
+                            if (cookieString.isNotEmpty() && cookieString.contains("cf_clearance")) {
+                                success = true
+                                cookiesResult = cookieString
+                                webViewInitialized = true
+                                latch.countDown()
+                            } else if (!success) {
+                                // إذا لم نجد الكوكيز المطلوبة، نحاول إعادة تحميل الصفحة بعد 5 ثوانٍ كحد أقصى
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    if (!success) {
+                                        webViewInitialized = false
+                                        latch.countDown()
+                                    }
+                                }, 5000)
+                            }
+                        }, 3000)
+                    }
+
+                    override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
+                        super.onReceivedError(view, request, error)
+                        webViewInitialized = false
+                        latch.countDown()
+                    }
+                }
+
+                webView.webChromeClient = WebChromeClient()
+                webView.loadUrl(baseUrl)
+            } catch (e: Exception) {
+                Log.e(name, "WebView initialization failed", e)
+                latch.countDown()
+            }
         }
-        .build()
 
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
-        .set("Origin", baseUrl)
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        try {
+            latch.await(15, TimeUnit.SECONDS) // انتظر حتى 15 ثانية
+        } catch (e: InterruptedException) {
+            // ignore
+        }
 
-    private val rscHeaders = headersBuilder()
-        .set("rsc", "1")
-        .build()
+        webViewBypassAttempted = true
+        if (success && cookiesResult != null) {
+            updateClientWithCookies(cookiesResult!!)
+            return true
+        }
+        return false
+    }
 
     // تجاوز الطلبات التي تفشل بـ 403 لعرض رسالة توجيهية
     private fun checkAndThrow403(response: Response) {
         if (response.code == 403) {
             response.close()
-            throw Exception("HTTP 403 - الموقع يطلب التحقق. الرجاء استخدام 'Open in WebView' من القائمة لتجاوز الحماية.\n\nبعد فتح الموقع في WebView والعودة، ستتم المزامنة.")
+            // محاولة تشغيل WebView الخفي
+            if (!webViewInitialized) {
+                if (performWebViewBypass()) {
+                    // إذا نجحنا، نرمي استثناء لإعادة المحاولة
+                    throw Exception("تم تجاوز الحماية مؤقتاً. الرجاء إعادة المحاولة.")
+                } else {
+                    throw Exception("HTTP 403 - الموقع يطلب التحقق. الرجاء استخدام 'Open in WebView' من القائمة لتجاوز الحماية.\n\nبعد فتح الموقع في WebView والعودة، ستتم المزامنة.")
+                }
+            } else {
+                throw Exception("HTTP 403 - فشل تجاوز الحماية. الرجاء استخدام 'Open in WebView' من القائمة.")
+            }
         }
     }
 
@@ -641,10 +749,12 @@ class ProComic : HttpSource() {
     override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
     override fun searchMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-}
 
-private val SUPPORTED_TYPES = setOf("manga", "manhwa", "manhua")
-private const val SCRAMBLED_IMAGE_HOST = "127.0.0.1"
-private val JSON_MEDIA_TYPE = "application/json".toMediaType()
-private val MOBILE_REGEX = Regex("mobile|android|iphone|ipad|ipod", RegexOption.IGNORE_CASE)
-private val TABLES_REGEX = Regex("tablet", RegexOption.IGNORE_CASE)
+    companion object {
+        private const val SCRAMBLED_IMAGE_HOST = "127.0.0.1"
+        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+        private val MOBILE_REGEX = Regex("mobile|android|iphone|ipad|ipod", RegexOption.IGNORE_CASE)
+        private val TABLES_REGEX = Regex("tablet", RegexOption.IGNORE_CASE)
+        private val SUPPORTED_TYPES = setOf("manga", "manhwa", "manhua")
+    }
+}
