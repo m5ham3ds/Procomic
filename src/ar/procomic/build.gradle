@@ -1,48 +1,13 @@
 ext {
-    extName = 'ProComic'
-    extClass = '.ProComic'
-    extVersionCode = 1
-    isNsfw = false
+	extName = 'ProComic'
+	extClass = '.ProComic'
+	extVersionCode = 47
+	isNsfw = true
 }
 
-apply plugin: 'com.android.library'
-apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
-
-android {
-    compileSdk = 34
-    namespace = 'eu.kanade.tachiyomi.extension.ar.procomic'
-
-    defaultConfig {
-        minSdk = 21
-        targetSdk = 34
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-
-    kotlinOptions {
-        jvmTarget = '11'
-        freeCompilerArgs += '-Xjvm-default=all'
-    }
-
-    buildFeatures {
-        buildConfig = false
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile('proguard-android-optimize.txt')
-            )
-        }
-    }
-}
+apply plugin: "kei.plugins.extension.legacy"
 
 dependencies {
+    compileOnly("com.github.tachiyomiorg:image-decoder:41c059e540")
     implementation(project(":lib:cookieinterceptor"))
-    implementation(libs.bundles.common)
-    compileOnly(libs.tachiyomi.lib)
 }
