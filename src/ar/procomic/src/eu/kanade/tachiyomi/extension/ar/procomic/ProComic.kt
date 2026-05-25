@@ -324,7 +324,10 @@ class ProComic : HttpSource() {
         val chapterUrl = response.request.url.toString()
         val pages = mutableListOf<Page>()
         images.forEachIndexed { idx, url -> pages.add(Page(idx, chapterUrl, url)) }
-        maps.forEachIndexed { idx, data -> pages.add(Page(images.size + idx, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#${data.toJsonString()}")) }
+        maps.forEachIndexed { idx, data -> 
+            val jsonString = data.toJsonString()
+            pages.add(Page(images.size + idx, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#$jsonString"))
+        }
         return pages
     }
 
@@ -338,9 +341,12 @@ class ProComic : HttpSource() {
         val chapterUrl = request.header("Referer")!!
         val cdn = when (chapterUrl.toHttpUrl().pathSegments[1]) { "manga" -> "cdn1"; "manhua" -> "cdn2"; else -> "cdn3" }
 
-        val scrambledImage = when (val scrambledData = url.fragment!!.parseAs<ScrambledData>()) {
+        val fragment = url.fragment ?: return chain.proceed(request)
+        val scrambledData = fragment.parseAs<ScrambledData>()
+        val scrambledImage = when (scrambledData) {
             is ScrambledImage -> scrambledData
             is ScrambledImageToken -> decodeScrambledImageToken(scrambledData)
+            else -> throw IOException("Unknown scrambled data type")
         }
 
         val (puzzleMode, layout) = scrambledImage.mode.split("_", limit = 2)
@@ -434,7 +440,7 @@ class ProComic : HttpSource() {
         val tag = urlSafeBase64(value.tag)
         val encryptedData = urlSafeBase64(value.data)
 
-        val key = when (value.m) {
+        val key: Key = when (value.m) {
             "browser" if value.v == 2 -> {
                 val hash = MessageDigest.getInstance("SHA-256").digest("prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}".toByteArray())
                 SecretKeySpec(hash, "AES")
@@ -444,7 +450,7 @@ class ProComic : HttpSource() {
                 sessionKey[value.cid]?.takeIf { it.second > time }?.first ?: run {
                     val request = GET("$baseUrl/chapter-map-session-key/${value.cid}", headers)
                     val response = client.newCall(request).execute().parseAs<Data<Key>>()
-                    sessionKey[value.cid] = response.data.key to (time + 120000)
+                    sessionKey[value.cid] = Pair(response.data.key, time + 120000)
                     response.data.key
                 }.let { SecretKeySpec(urlSafeBase64(it), "AES") }
             }
@@ -453,7 +459,7 @@ class ProComic : HttpSource() {
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val spec = GCMParameterSpec(128, iv)
-        cipher.init(Cipher.DECRYPT_MODE, key as Key, spec as AlgorithmParameterSpec)
+        cipher.init(Cipher.DECRYPT_MODE, key, spec as AlgorithmParameterSpec)
 
         val decryptedBytes = cipher.doFinal(encryptedData + tag)
         return String(decryptedBytes, Charsets.UTF_8).parseAs()
