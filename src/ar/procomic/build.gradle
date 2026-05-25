@@ -1,26 +1,41 @@
 ext {
     extName = 'ProComic'
-    pkgNameSuffix = 'ar.procomic'
     extClass = '.ProComic'
     extVersionCode = 1
     isNsfw = false
 }
 
-apply from: "$rootDir/common.gradle"
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlinx-serialization'
 
 android {
-    signingConfigs {
-        release {
-            storeFile file("debug.keystore")
-            storePassword "android"
-            keyAlias "androiddebugkey"
-            keyPassword "android"
-        }
+    compileSdk 34
+    namespace "eu.kanade.tachiyomi.extension.ar.procomic"
+
+    defaultConfig {
+        minSdk 21
+        targetSdk 34
     }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.release
             minifyEnabled false
         }
     }
+}
+
+dependencies {
+    implementation project(':lib:cookieinterceptor')
+    implementation libs.bundles.common
+    compileOnly libs.tachiyomi.lib
 }
