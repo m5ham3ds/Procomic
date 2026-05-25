@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity
-            android:name=".ar.mangapro.UrlActivity"
+            android:name=".ar.procomic.UrlActivity"
             android:excludeFromRecents="true"
             android:exported="true"
             android:theme="@android:style/Theme.NoDisplay">
@@ -11,7 +11,7 @@
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
 
-                <data android:host="prochan.net" />
+                <data android:host="procomic.net" />
                 <data android:scheme="https" />
                 <data android:pathPattern="/series/..*" />
             </intent-filter>
