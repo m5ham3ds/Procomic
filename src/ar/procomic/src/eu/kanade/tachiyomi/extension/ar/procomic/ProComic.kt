@@ -41,7 +41,9 @@ import okio.Buffer
 import rx.Observable
 import tachiyomi.decoder.ImageDecoder
 import java.io.IOException
+import java.security.Key
 import java.security.MessageDigest
+import java.security.spec.AlgorithmParameterSpec
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -449,9 +451,10 @@ class ProComic : HttpSource() {
             else -> throw Exception("Unknown method: ${value.m}")
         }
 
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
-        }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val spec = GCMParameterSpec(128, iv)
+        cipher.init(Cipher.DECRYPT_MODE, key as Key, spec as AlgorithmParameterSpec)
+
         val decryptedBytes = cipher.doFinal(encryptedData + tag)
         return String(decryptedBytes, Charsets.UTF_8).parseAs()
     }
