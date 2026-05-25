@@ -6,36 +6,43 @@ ext {
 }
 
 apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
-apply plugin: 'kotlinx-serialization'
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
 
 android {
-    compileSdk 34
-    namespace "eu.kanade.tachiyomi.extension.ar.procomic"
+    compileSdk = 34
+    namespace = 'eu.kanade.tachiyomi.extension.ar.procomic'
 
     defaultConfig {
-        minSdk 21
-        targetSdk 34
+        minSdk = 21
+        targetSdk = 34
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_11
-        targetCompatibility JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
 
     kotlinOptions {
         jvmTarget = '11'
+        freeCompilerArgs += '-Xjvm-default=all'
+    }
+
+    buildFeatures {
+        buildConfig = false
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile('proguard-android-optimize.txt')
+            )
         }
     }
 }
 
 dependencies {
-    implementation project(':lib:cookieinterceptor')
-    implementation libs.bundles.common
-    compileOnly libs.tachiyomi.lib
+    implementation(project(":lib:cookieinterceptor"))
+    implementation(libs.bundles.common)
+    compileOnly(libs.tachiyomi.lib)
 }
