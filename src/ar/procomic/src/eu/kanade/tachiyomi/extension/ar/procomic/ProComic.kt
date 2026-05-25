@@ -30,6 +30,7 @@ import okhttp3.Callback
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -43,6 +44,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
@@ -57,7 +59,10 @@ class ProComic : HttpSource() {
     override val supportsLatest = true
     override val versionId = 5
 
-    override val client = network.cloudflareClient.newBuilder()
+    // Custom client with browser-like headers
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .addInterceptor(::scrambledImageInterceptor)
         .addNetworkInterceptor(
             CookieInterceptor(
@@ -66,13 +71,28 @@ class ProComic : HttpSource() {
                     "safe_browsing" to "off",
                     "language" to "ar",
                 ),
-            ),
+            )
         )
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val request = original.newBuilder()
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "ar,en;q=0.9")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "none")
+                .header("Upgrade-Insecure-Requests", "1")
+                .method(original.method, original.body)
+                .build()
+            chain.proceed(request)
+        }
         .build()
 
     override fun headersBuilder() = super.headersBuilder()
         .set("Referer", "$baseUrl/")
         .set("Origin", baseUrl)
+        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     private val rscHeaders = headersBuilder()
         .set("rsc", "1")
@@ -360,7 +380,6 @@ class ProComic : HttpSource() {
 
         // معالجة الصور المؤجلة (deferredMedia)
         imageData.deferredMedia?.let { deferred ->
-            // إذا كان الفصل يتطلب Turnstile، نعرض خطأ ونطلب فتحه يدوياً
             if (deferred.requireTurnstile == true) {
                 throw Exception("هذا الفصل يتطلب التحقق الأمني (Turnstile). الرجاء فتحه من متصفح عادي.")
             }
@@ -370,7 +389,6 @@ class ProComic : HttpSource() {
                 .addPathSegment(chapterId)
                 .addQueryParameter("token", deferred.token)
                 .apply {
-                    // إضافة معامل split إذا كان موجوداً
                     deferred.splitIndex?.let { split ->
                         addQueryParameter("split", split.toString())
                     }
@@ -536,7 +554,6 @@ class ProComic : HttpSource() {
 
         val key = when (value.m) {
             "browser" if value.v == 2 -> {
-                // المفتاح الثابت المستخرج من JavaScript
                 val hash = MessageDigest.getInstance("SHA-256")
                     .digest(
                         "prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}"
