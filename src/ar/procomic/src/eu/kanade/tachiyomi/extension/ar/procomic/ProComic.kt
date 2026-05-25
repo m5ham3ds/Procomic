@@ -66,7 +66,7 @@ class ProComic : HttpSource() {
         .addNetworkInterceptor(CookieInterceptor(domain, listOf("safe_browsing" to "off", "language" to "ar")))
         .addInterceptor { chain ->
             val original = chain.request()
-            val request = original.newBuilder()
+            val newRequest = original.newBuilder()
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
                 .header("Accept-Language", "ar,en;q=0.9")
@@ -75,7 +75,7 @@ class ProComic : HttpSource() {
                 .header("Sec-Fetch-Site", "none")
                 .method(original.method, original.body)
                 .build()
-            chain.proceed(request)
+            chain.proceed(newRequest)
         }
         .build()
 
@@ -84,22 +84,19 @@ class ProComic : HttpSource() {
         .set("Origin", baseUrl)
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-    private val rscHeaders = headersBuilder()
-        .set("rsc", "1")
-        .build()
+    private val rscHeaders = headersBuilder().set("rsc", "1").build()
 
-    private fun check403(response: Response) {
-        if (response.code == 403) {
-            response.close()
-            throw Exception("HTTP 403 - الرجاء استخدام 'Open in WebView' من القائمة لتجاوز الحماية.")
+    private fun check403(resp: Response) {
+        if (resp.code == 403) {
+            resp.close()
+            throw Exception("HTTP 403 - استخدم 'Open in WebView' من القائمة")
         }
     }
 
     override fun fetchPopularManga(page: Int) = fetchSearchManga(page, "", getFilterList().apply { firstInstance<SortFilter>().state = 2 })
     override fun fetchLatestUpdates(page: Int) = fetchSearchManga(page, "", getFilterList().apply { firstInstance<SortFilter>().state = 1 })
 
-    private val pageNumber = ConcurrentHashMap<String, Int>()
-    private fun searchKey(query: String, filters: FilterList) = "$query::${filters.filterIsInstance<Filter<*>>().joinToString("|") { it.state.toString() }}"
+    private val pageCache = ConcurrentHashMap<String, Int>()
 
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
         if (query.startsWith("https://")) {
@@ -108,20 +105,21 @@ class ProComic : HttpSource() {
             if (url.host == domain && path.size >= 4 && path[0] == "series") {
                 val type = path[1]
                 if (type !in setOf("manga", "manhwa", "manhua")) throw Exception("نوع غير مدعوم")
-                val manga = SManga.create().apply { url = "/series/$type/${path[2]}/${path[3]}" }
+                val manga = SManga.create().apply { this.url = "/series/$type/${path[2]}/${path[3]}" }
                 return fetchMangaDetails(manga).map { MangasPage(listOf(it), false) }
             } else throw Exception("رابط غير مدعوم")
         }
 
-        val key = searchKey(query, filters)
-        if (page == 1) pageNumber[key] = 1
+        val key = "$query::${filters.filterIsInstance<Filter<*>>().joinToString("|") { it.state.toString() }}"
+        if (page == 1) pageCache[key] = 1
+        val curPage = pageCache[key] ?: 1
 
-        return client.newCall(searchMangaRequest(pageNumber[key]!!, query, filters))
+        return client.newCall(searchMangaRequest(curPage, query, filters))
             .asObservableSuccess()
             .doOnNext { check403(it) }
-            .map { response ->
-                val data = response.parseAs<MetaData<BrowseManga>>()
-                val mangas = data.data.map { manga ->
+            .map { resp ->
+                val data = resp.parseAs<MetaData<BrowseManga>>()
+                val list = data.data.map { manga ->
                     SManga.create().apply {
                         url = "/series/${manga.type}/${manga.id}/${manga.slug}"
                         title = manga.title
@@ -130,30 +128,29 @@ class ProComic : HttpSource() {
                         }
                     }
                 }
-                MangasPage(mangas, data.meta.hasNextPage())
+                MangasPage(list, data.meta.hasNextPage())
             }
-            .flatMap {
-                if (it.mangas.isEmpty() && it.hasNextPage) {
-                    pageNumber[key] = pageNumber[key]!! + 1
-                    fetchSearchManga(pageNumber[key]!!, query, filters)
+            .flatMap { result ->
+                if (result.mangas.isEmpty() && result.hasNextPage) {
+                    pageCache[key] = curPage + 1
+                    fetchSearchManga(curPage + 1, query, filters)
                 } else {
-                    if (!it.hasNextPage) pageNumber.remove(key)
-                    Observable.just(it)
+                    if (!result.hasNextPage) pageCache.remove(key)
+                    Observable.just(result)
                 }
             }
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$baseUrl/api/public/series/search".toHttpUrl().newBuilder().apply {
-            addQueryParameter("status", "approved")
-            addQueryParameter("limit", "18")
-            addQueryParameter("page", page.toString())
-            if (query.isNotBlank()) addQueryParameter("search", query)
-            filters.firstInstance<TypeFilter>().selected?.let { addQueryParameter("type", it) }
-            addQueryParameter("sort", filters.firstInstance<SortFilter>().selected)
-            filters.firstInstance<YearFilter>().selected?.let { addQueryParameter("year", it) }
-        }.build()
-        return GET(url, headers)
+        val builder = "$baseUrl/api/public/series/search".toHttpUrl().newBuilder()
+        builder.addQueryParameter("status", "approved")
+        builder.addQueryParameter("limit", "18")
+        builder.addQueryParameter("page", page.toString())
+        if (query.isNotBlank()) builder.addQueryParameter("search", query)
+        filters.firstInstance<TypeFilter>().selected?.let { builder.addQueryParameter("type", it) }
+        builder.addQueryParameter("sort", filters.firstInstance<SortFilter>().selected)
+        filters.firstInstance<YearFilter>().selected?.let { builder.addQueryParameter("year", it) }
+        return GET(builder.build(), headers)
     }
 
     override fun getFilterList() = FilterList(TypeFilter(), SortFilter(), YearFilter(), StatusFilter(), GenreFilter(), TagFilter())
@@ -161,9 +158,9 @@ class ProComic : HttpSource() {
     override fun mangaDetailsRequest(manga: SManga) = GET(getMangaUrl(manga), rscHeaders)
     override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        check403(response)
-        val manga = response.extractNextJs<Series>()!!.series
+    override fun mangaDetailsParse(resp: Response): SManga {
+        check403(resp)
+        val manga = resp.extractNextJs<Series>()!!.series
         return SManga.create().apply {
             url = "/series/${manga.type}/${manga.id}/${manga.slug}"
             title = manga.title
@@ -188,7 +185,12 @@ class ProComic : HttpSource() {
                 manga.metadata.genres.forEach { add(it) }
                 manga.metadata.tags.forEach { add(it) }
             }.joinToString()
-            status = when (manga.progress?.trim()) { "مستمر" -> SManga.ONGOING; "مكتمل" -> SManga.COMPLETED; "متوقف" -> SManga.ON_HIATUS else -> SManga.UNKNOWN }
+            status = when (manga.progress?.trim()) {
+                "مستمر" -> SManga.ONGOING
+                "مكتمل" -> SManga.COMPLETED
+                "متوقف" -> SManga.ON_HIATUS
+                else -> SManga.UNKNOWN
+            }
             thumbnail_url = (manga.coverImageApp?.desktop ?: manga.metadata.coverImage)?.let {
                 if (it.startsWith("/")) manga.cdn?.let { cdn -> "https://$cdn.$domain$it" } else it
             }
@@ -198,100 +200,106 @@ class ProComic : HttpSource() {
 
     override fun chapterListRequest(manga: SManga) = GET(getMangaUrl(manga), rscHeaders)
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        check403(response)
-        val data = response.extractNextJs<InitialChapters>()!!
+    override fun chapterListParse(resp: Response): List<SChapter> {
+        check403(resp)
+        val data = resp.extractNextJs<InitialChapters>()!!
         val chapters = data.initialChapters.toMutableList()
-        val size = chapters.size
+        val limit = chapters.size
         var page = 2
-        val type = response.request.url.pathSegments[1]
-        val id = response.request.url.pathSegments[2]
-        val slug = response.request.url.pathSegments[3]
+        val type = resp.request.url.pathSegments[1]
+        val id = resp.request.url.pathSegments[2]
+        val slug = resp.request.url.pathSegments[3]
 
         while (data.totalChapters > chapters.size) {
-            val req = GET("$baseUrl/api/public/$type/$id/chapters?page=${page++}&limit=$size&order=desc", headers)
+            val req = GET("$baseUrl/api/public/$type/$id/chapters?page=$page&limit=$limit&order=desc", headers)
             val next = client.newCall(req).execute().also { if (!it.isSuccessful) { it.close(); throw Exception("HTTP ${it.code}") } }
                 .parseAs<Data<List<Chapter>>>()
             chapters.addAll(next.data)
+            page++
         }
 
         countViews(id)
-
-        return chapters.filter { it.language == "AR" }.map { chapter ->
+        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
+        return chapters.filter { it.language == "AR" }.map { ch ->
             SChapter.create().apply {
-                url = "/series/$type/$id/$slug/${chapter.id}/${chapter.number}"
+                url = "/series/$type/$id/$slug/${ch.id}/${ch.number}"
                 name = buildString {
                     append("\u200F")
-                    if (chapter.coins != null && chapter.coins > 0) append("🔒 ")
+                    if (ch.coins != null && ch.coins > 0) append("🔒 ")
                     append("الفصل ")
-                    append(chapter.number.toFloat().toString().substringBefore(".0"))
-                    chapter.title?.takeIf { it.isNotBlank() && it != chapter.number.trim() && it != chapter.number }?.let {
+                    append(ch.number.toFloat().toString().substringBefore(".0"))
+                    ch.title?.takeIf { it.isNotBlank() && it != ch.number.trim() && it != ch.number }?.let {
                         append(" \u200F- ", it)
                     }
                 }
-                scanlator = chapter.uploader ?: "\u200B"
-                chapter_number = chapter.number.toFloat()
-                date_upload = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).tryParse(chapter.createdAt)
+                scanlator = ch.uploader ?: "\u200B"
+                chapter_number = ch.number.toFloat()
+                date_upload = fmt.tryParse(ch.createdAt)
             }
         }.sortedByDescending { it.chapter_number }
     }
 
     override fun pageListRequest(chapter: SChapter) = GET(getChapterUrl(chapter), rscHeaders)
-    override fun getChapterUrl(chapter: SChapter) = "$baseUrl${if (chapter.url.startsWith("{")) chapter.url.parseAs<ChapterUrl>() else chapter.url}"
 
-    override fun pageListParse(response: Response): List<Page> {
-        check403(response)
-        val body = response.body.string()
-        val imageData = body.extractNextJsRsc<Images>() ?: throw Exception("لا توجد صور")
-        val seriesId = response.request.url.pathSegments[2]
-        val chapterId = response.request.url.pathSegments[4]
+    override fun getChapterUrl(chapter: SChapter): String {
+        val part = if (chapter.url.startsWith("{")) chapter.url.parseAs<ChapterUrl>() else chapter.url
+        return "$baseUrl$part"
+    }
 
-        val images = imageData.images.toMutableList()
+    override fun pageListParse(resp: Response): List<Page> {
+        check403(resp)
+        val body = resp.body.string()
+        val imgData = body.extractNextJsRsc<Images>() ?: throw Exception("لا توجد صور")
+        val seriesId = resp.request.url.pathSegments[2]
+        val chapterId = resp.request.url.pathSegments[4]
+
+        val images = imgData.images.toMutableList()
         val maps = mutableListOf<ScrambledData>()
 
-        imageData.deferredMedia?.let { deferred ->
-            if (deferred.requireTurnstile == true) throw Exception("يتطلب Turnstile، افتح في WebView أولاً")
+        imgData.deferredMedia?.let { def ->
+            if (def.requireTurnstile == true) throw Exception("يتطلب Turnstile، افتح في WebView أولاً")
             val url = baseUrl.toHttpUrl().newBuilder()
                 .addPathSegment("chapter-deferred-media")
                 .addPathSegment(chapterId)
-                .addQueryParameter("token", deferred.token)
-                .apply { deferred.splitIndex?.let { addQueryParameter("split", it.toString()) } }
+                .addQueryParameter("token", def.token)
+                .apply { def.splitIndex?.let { addQueryParameter("split", it.toString()) } }
                 .build()
-            val deferredImages = client.newCall(GET(url, headers)).execute().parseAs<Data<DeferredImages>>()
-            images.addAll(deferredImages.data.images)
-            maps.addAll(deferredImages.data.maps)
+            val deferred = client.newCall(GET(url, headers)).execute().parseAs<Data<DeferredImages>>()
+            images.addAll(deferred.data.images)
+            maps.addAll(deferred.data.maps)
         }
 
         countViews(seriesId, chapterId)
-
-        val chapterUrl = response.request.url.toString()
+        val chapterUrl = resp.request.url.toString()
         val pages = mutableListOf<Page>()
-        images.forEachIndexed { i, url -> pages.add(Page(i, chapterUrl, url)) }
-        maps.forEachIndexed { i, data -> pages.add(Page(images.size + i, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#${data.toJsonString()}")) }
+        images.forEachIndexed { i, u -> pages.add(Page(i, chapterUrl, u)) }
+        maps.forEachIndexed { i, d -> pages.add(Page(images.size + i, chapterUrl, "http://$SCRAMBLED_IMAGE_HOST/#${d.toJsonString()}")) }
         return pages
     }
 
     override fun imageRequest(page: Page) = GET(page.imageUrl!!, headersBuilder().set("Referer", page.url).build())
 
     private fun scrambledImageInterceptor(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        val url = request.url
-        if (url.host != SCRAMBLED_IMAGE_HOST) return chain.proceed(request)
+        val req = chain.request()
+        val url = req.url
+        if (url.host != SCRAMBLED_IMAGE_HOST) return chain.proceed(req)
 
-        val chapterUrl = request.header("Referer")!!
+        val chapterUrl = req.header("Referer")!!
         val cdn = when (chapterUrl.toHttpUrl().pathSegments[1]) { "manga" -> "cdn1"; "manhua" -> "cdn2"; else -> "cdn3" }
-        val fragment = url.fragment ?: return chain.proceed(request)
-        val scrambledData = fragment.parseAs<ScrambledData>()
-        val scrambledImage = when (scrambledData) {
-            is ScrambledImage -> scrambledData
-            is ScrambledImageToken -> decodeToken(scrambledData)
+        val fragment = url.fragment ?: return chain.proceed(req)
+        val scrambled = fragment.parseAs<ScrambledData>()
+        val image = when (scrambled) {
+            is ScrambledImage -> scrambled
+            is ScrambledImageToken -> decodeToken(scrambled)
             else -> throw IOException("Unknown")
         }
 
-        val (mode, layout) = scrambledImage.mode.split("_", limit = 2)
-        val width = scrambledImage.dim[0]
-        val height = scrambledImage.dim[1]
-        val pieces = scrambledImage.order.map { scrambledImage.pieces[it] }
+        val parts = image.mode.split("_", limit = 2)
+        val mode = parts[0]
+        val layout = if (parts.size > 1) parts[1] else ""
+        val width = image.dim[0]
+        val height = image.dim[1]
+        val pieces = image.order.map { image.pieces[it] }
 
         val bitmaps = runBlocking {
             pieces.map { piece ->
@@ -299,19 +307,20 @@ class ProComic : HttpSource() {
                     var imgUrl = if (piece.startsWith("/")) "https://$cdn.$domain$piece" else piece
                     if (imgUrl.toHttpUrl().host.startsWith("cdn")) {
                         val payload = Url(url = imgUrl).toJsonString().toRequestBody(JSON_MEDIA_TYPE)
-                        val headers = headersBuilder().set("Sec-Fetch-Site", "same-origin").set("Referer", chapterUrl).build()
-                        val sign = client.newCall(POST("$baseUrl/api/cdn-image/sign", headers, payload)).await()
+                        val signHeaders = headersBuilder().set("Sec-Fetch-Site", "same-origin").set("Referer", chapterUrl).build()
+                        val sign = client.newCall(POST("$baseUrl/api/cdn-image/sign", signHeaders, payload)).await()
                         if (sign.isSuccessful) {
                             val token = sign.parseAs<Token>()
-                            imgUrl = imgUrl.toHttpUrl().newBuilder()
+                            val newUrl = imgUrl.toHttpUrl().newBuilder()
                                 .addQueryParameter("token", token.token)
                                 .addQueryParameter("expires", token.expires.toString())
-                                .build().toString()
+                                .build()
+                            imgUrl = newUrl.toString()
                         }
                     }
-                    val pieceReq = request.newBuilder().url(imgUrl).build()
-                    val resp = client.newCall(pieceReq).await()
-                    resp.body.use { body ->
+                    val pieceReq = req.newBuilder().url(imgUrl).build()
+                    val pieceResp = client.newCall(pieceReq).await()
+                    pieceResp.body.use { body ->
                         val decoder = ImageDecoder.newInstance(body.byteStream()) ?: throw Exception("Decoder fail")
                         try { decoder.decode() ?: throw Exception("Decode fail") } finally { decoder.recycle() }
                     }
@@ -321,37 +330,52 @@ class ProComic : HttpSource() {
 
         val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(result)
-        when (mode) {
-            "vertical" -> { var x = 0f; bitmaps.forEach { canvas.drawBitmap(it, x, 0f, null); x += it.width } }
-            "grid" -> {
-                val (cols, rows) = layout.split('x').map { it.toInt() }
-                var y = 0f
-                for (r in 0 until rows) {
+        try {
+            when (mode) {
+                "vertical" -> {
                     var x = 0f
-                    var maxH = 0f
-                    for (c in 0 until cols) {
-                        val idx = r * cols + c
-                        if (idx < bitmaps.size) {
-                            canvas.drawBitmap(bitmaps[idx], x, y, null)
-                            x += bitmaps[idx].width
-                            maxH = maxOf(maxH, bitmaps[idx].height.toFloat())
-                        }
+                    for (bmp in bitmaps) {
+                        canvas.drawBitmap(bmp, x, 0f, null)
+                        x += bmp.width
                     }
-                    y += maxH
                 }
+                "grid" -> {
+                    val (cols, rows) = layout.split('x').map { it.toInt() }
+                    var y = 0f
+                    for (r in 0 until rows) {
+                        var x = 0f
+                        var maxH = 0f
+                        for (c in 0 until cols) {
+                            val idx = r * cols + c
+                            if (idx < bitmaps.size) {
+                                canvas.drawBitmap(bitmaps[idx], x, y, null)
+                                x += bitmaps[idx].width
+                                maxH = maxOf(maxH, bitmaps[idx].height.toFloat())
+                            }
+                        }
+                        y += maxH
+                    }
+                }
+                else -> throw IOException("Unknown mode")
             }
-            else -> throw IOException("Unknown mode")
+            val buffer = Buffer().apply { result.compress(Bitmap.CompressFormat.JPEG, 90, outputStream()) }
+            return Response.Builder()
+                .request(req)
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(buffer.asResponseBody("image/jpg".toMediaType(), buffer.size))
+                .build()
+        } finally {
+            bitmaps.forEach { it.recycle() }
+            result.recycle()
         }
-        val buffer = Buffer().apply { result.compress(Bitmap.CompressFormat.JPEG, 90, outputStream()) }
-        bitmaps.forEach { it.recycle() }
-        result.recycle()
-        return Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-            .body(buffer.asResponseBody("image/jpg".toMediaType(), buffer.size)).build()
     }
 
-    private val sessionKeys = ConcurrentHashMap<Int, Pair<String, Long>>()
+    private val sessionCache = ConcurrentHashMap<Int, Pair<String, Long>>()
     private fun decodeToken(token: ScrambledImageToken): ScrambledImage {
-        val value = String(urlSafeBase64(token.token), Charsets.UTF_8).parseAs<ScrambledImageTokenValue>()
+        val raw = String(urlSafeBase64(token.token), Charsets.UTF_8)
+        val value = raw.parseAs<ScrambledImageTokenValue>()
         val iv = urlSafeBase64(value.iv)
         val tag = urlSafeBase64(value.tag)
         val data = urlSafeBase64(value.data)
@@ -361,22 +385,23 @@ class ProComic : HttpSource() {
         val secret = when (value.m) {
             "browser" -> {
                 require(value.v == 2)
-                val hash = MessageDigest.getInstance("SHA-256").digest("prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}".toByteArray())
+                val input = "prochan-browser-map:2e6f9a1c4d8b7e3f0a5c9d2b6e1f4a8c7d3b0e6a9f2c5d8b1e4a7c0d3f6b9e2:${value.cid}"
+                val hash = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
                 SecretKeySpec(hash, "AES")
             }
             "browser_session" -> {
                 require(value.v == 3)
-                synchronized(sessionKeys) {
+                synchronized(sessionCache) {
                     val now = System.currentTimeMillis()
-                    val existing = sessionKeys[value.cid]
-                    if (existing != null && existing.second > now) {
-                        SecretKeySpec(urlSafeBase64(existing.first), "AES")
+                    val exist = sessionCache[value.cid]
+                    if (exist != null && exist.second > now) {
+                        SecretKeySpec(urlSafeBase64(exist.first), "AES")
                     } else {
                         val req = GET("$baseUrl/chapter-map-session-key/${value.cid}", headers)
                         val resp = client.newCall(req).execute()
                         if (!resp.isSuccessful) throw Exception("Session key failed")
                         val key = resp.parseAs<Data<Key>>().data.key
-                        sessionKeys[value.cid] = Pair(key, now + 120000)
+                        sessionCache[value.cid] = Pair(key, now + 120000)
                         SecretKeySpec(urlSafeBase64(key), "AES")
                     }
                 }
@@ -418,6 +443,5 @@ class ProComic : HttpSource() {
     companion object {
         private const val SCRAMBLED_IMAGE_HOST = "127.0.0.1"
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
-        private val SUPPORTED_TYPES = setOf("manga", "manhwa", "manhua")
     }
 }
