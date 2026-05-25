@@ -59,7 +59,8 @@ class ProComic : HttpSource() {
     override val supportsLatest = true
     override val versionId = 5
 
-    // Custom client with browser-like headers
+    private var webViewBypassAttempted = false
+
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -79,6 +80,10 @@ class ProComic : HttpSource() {
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
                 .header("Accept-Language", "ar,en;q=0.9")
+                .header("Accept-Encoding", "gzip, deflate, br")
+                .header("Sec-Ch-Ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"")
+                .header("Sec-Ch-Ua-Mobile", "?0")
+                .header("Sec-Ch-Ua-Platform", "\"Windows\"")
                 .header("Sec-Fetch-Dest", "document")
                 .header("Sec-Fetch-Mode", "navigate")
                 .header("Sec-Fetch-Site", "none")
@@ -97,6 +102,14 @@ class ProComic : HttpSource() {
     private val rscHeaders = headersBuilder()
         .set("rsc", "1")
         .build()
+
+    // تجاوز الطلبات التي تفشل بـ 403 لعرض رسالة توجيهية
+    private fun checkAndThrow403(response: Response) {
+        if (response.code == 403) {
+            response.close()
+            throw Exception("HTTP 403 - الموقع يطلب التحقق. الرجاء استخدام 'Open in WebView' من القائمة لتجاوز الحماية.\n\nبعد فتح الموقع في WebView والعودة، ستتم المزامنة.")
+        }
+    }
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
         val filters = getFilterList().apply {
@@ -151,6 +164,7 @@ class ProComic : HttpSource() {
 
         return client.newCall(searchMangaRequest(pageNumber[key]!!, query, filters))
             .asObservableSuccess()
+            .doOnNext { response -> checkAndThrow403(response) }
             .map { response ->
                 val statusFilter = filters.firstInstance<StatusFilter>().selected
                 val genreFilter = filters.firstInstance<GenreFilter>()
@@ -236,6 +250,7 @@ class ProComic : HttpSource() {
     override fun getMangaUrl(manga: SManga): String = "$baseUrl${manga.url}"
 
     override fun mangaDetailsParse(response: Response): SManga {
+        checkAndThrow403(response)
         val manga = response.extractNextJs<Series>()!!.series
 
         return SManga.create().apply {
@@ -296,6 +311,7 @@ class ProComic : HttpSource() {
     override fun chapterListRequest(manga: SManga) = GET(getMangaUrl(manga), rscHeaders)
 
     override fun chapterListParse(response: Response): List<SChapter> {
+        checkAndThrow403(response)
         val data = response.extractNextJs<InitialChapters>()!!
         val chapters = data.initialChapters.toMutableList()
         val size = chapters.size
@@ -361,6 +377,7 @@ class ProComic : HttpSource() {
     }
 
     override fun pageListParse(response: Response): List<Page> {
+        checkAndThrow403(response)
         val responseBody = response.body.string()
         val imageData = responseBody.extractNextJsRsc<Images>()
         if (imageData == null) {
@@ -378,7 +395,6 @@ class ProComic : HttpSource() {
         val images = imageData.images.toMutableList()
         val maps = mutableListOf<ScrambledData>()
 
-        // معالجة الصور المؤجلة (deferredMedia)
         imageData.deferredMedia?.let { deferred ->
             if (deferred.requireTurnstile == true) {
                 throw Exception("هذا الفصل يتطلب التحقق الأمني (Turnstile). الرجاء فتحه من متصفح عادي.")
