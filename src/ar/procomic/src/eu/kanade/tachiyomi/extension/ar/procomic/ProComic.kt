@@ -219,6 +219,15 @@ class ProComic : HttpSource() {
         }
     }
 
+    override fun headersBuilder() = super.headersBuilder()
+        .set("Referer", "$baseUrl/")
+        .set("Origin", baseUrl)
+        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    private val rscHeaders = headersBuilder()
+        .set("rsc", "1")
+        .build()
+
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
         val filters = getFilterList().apply {
             firstInstance<SortFilter>().state = 2
