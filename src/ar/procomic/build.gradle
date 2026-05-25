@@ -1,8 +1,8 @@
 ext {
-	extName = 'ProComic'
-	extClass = '.ProComic'
-	extVersionCode = 47
-	isNsfw = true
+    extName = 'ProComic'
+    extClass = '.ProComic'
+    extVersionCode = 47
+    isNsfw = true
 }
 
 apply plugin: "kei.plugins.extension.legacy"
@@ -10,4 +10,8 @@ apply plugin: "kei.plugins.extension.legacy"
 dependencies {
     compileOnly("com.github.tachiyomiorg:image-decoder:41c059e540")
     implementation(project(":lib:cookieinterceptor"))
+    
+    // التبعيات الجديدة لـ WebView والحل الخفي
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.core:core-ktx:1.13.1'
 }
